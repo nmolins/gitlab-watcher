@@ -30,7 +30,7 @@ Le token se crée dans GitLab : **Settings > Access Tokens**, scope `read_api`.
 ## Autostart
 
 ```bash
+cp gitlab-watcher.desktop.example gitlab-watcher.desktop
+# Éditer le chemin Exec= dans gitlab-watcher.desktop
 cp gitlab-watcher.desktop ~/.config/autostart/
 ```
-
-Éditer le chemin `Exec=` dans le fichier si nécessaire.
