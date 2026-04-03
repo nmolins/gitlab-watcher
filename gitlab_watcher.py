@@ -237,16 +237,19 @@ class GitLabWatcherApp:
         self.seen_iids: set[tuple] = set()  # (project_id, iid)
         self.first_run = True
         self.mrs: list[dict] = []
+        self._last_menu_key: str = ""
 
         Notify.init("GitLab Watcher")
 
+        icons_dir = str(Path(__file__).parent / "icons")
         self.indicator = AppIndicator3.Indicator.new(
             "gitlab-watcher",
-            "git-logo",
+            "gitlab",
             AppIndicator3.IndicatorCategory.COMMUNICATIONS,
         )
+        self.indicator.set_icon_theme_path(icons_dir)
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-        self.indicator.set_attention_icon("mail-message-new")
+        self.indicator.set_attention_icon_full("gitlab-new", "New merge requests")
 
         self._build_menu([])
         GLib.idle_add(self._poll)
@@ -254,7 +257,15 @@ class GitLabWatcherApp:
 
     # -- Menu ---------------------------------------------------------------
 
-    def _build_menu(self, mrs: list[dict]):
+    def _build_menu(self, mrs: list[dict], force=False):
+        menu_key = "|".join(
+            f"{mr.get('project_id')}/{mr.get('iid')}/{mr.get('updated_at')}"
+            for mr in mrs
+        )
+        if not force and menu_key == self._last_menu_key:
+            return
+        self._last_menu_key = menu_key
+
         menu = Gtk.Menu()
 
         if not mrs:
@@ -264,12 +275,12 @@ class GitLabWatcherApp:
         else:
             for mr in mrs:
                 title = mr.get("title", "")
-                if len(title) > 60:
-                    title = title[:57] + "..."
+                if len(title) > 50:
+                    title = title[:47] + "..."
                 iid = mr.get("iid", "?")
                 state = STATE_LABELS.get(mr.get("state", ""), mr.get("state", ""))
                 author = mr.get("author", {}).get("name", "?")
-                label = f"!{iid}  {title}  [{state}] — {author}"
+                label = f"!{iid} [{state}] {title} — {author}"
                 item = Gtk.MenuItem(label=label)
                 url = mr.get("web_url", "")
                 item.connect("activate", lambda w, u=url: webbrowser.open(u))
