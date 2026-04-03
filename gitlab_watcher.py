@@ -30,11 +30,13 @@ from gi.repository import GLib, Gtk, Notify
 import os
 
 
+CONFIG_PATH = Path(__file__).parent / "config.yaml"
+
+
 def load_config():
-    config_path = Path(__file__).parent / "config.yaml"
     cfg = {}
-    if config_path.exists():
-        with open(config_path) as f:
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH) as f:
             cfg = yaml.safe_load(f) or {}
 
     # Env overrides
@@ -50,20 +52,36 @@ def load_config():
     cfg["mr_state"] = cfg.get("mr_state", "opened")
     cfg["per_page"] = int(cfg.get("per_page", 20))
 
-    # Normalise project_ids to a list
-    ids = cfg["project_ids"]
+    _normalise_project_ids(cfg)
+    return cfg
+
+
+def _normalise_project_ids(cfg):
+    ids = cfg.get("project_ids", "")
     if isinstance(ids, (int, str)):
         ids = str(ids)
         cfg["project_ids"] = [s.strip() for s in ids.split(",") if s.strip()]
     elif isinstance(ids, list):
         cfg["project_ids"] = [str(i).strip() for i in ids]
+    else:
+        cfg["project_ids"] = []
 
-    for key in ("gitlab_url", "private_token", "project_ids"):
-        if not cfg.get(key):
-            print(f"Error: '{key}' manquant dans config.yaml ou env.", file=sys.stderr)
-            sys.exit(1)
 
-    return cfg
+def save_config(cfg):
+    data = {
+        "gitlab_url": cfg.get("gitlab_url", ""),
+        "private_token": cfg.get("private_token", ""),
+        "project_ids": cfg.get("project_ids", []),
+        "poll_interval": cfg.get("poll_interval", 60),
+        "mr_state": cfg.get("mr_state", "opened"),
+        "per_page": cfg.get("per_page", 20),
+    }
+    with open(CONFIG_PATH, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+
+
+def config_is_valid(cfg) -> bool:
+    return bool(cfg.get("gitlab_url") and cfg.get("private_token") and cfg.get("project_ids"))
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +117,108 @@ class GitLabClient:
         # Sort all by updated_at desc, keep top per_page
         all_mrs.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
         return all_mrs[:per_page]
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Config dialog
+# ---------------------------------------------------------------------------
+
+MR_STATE_OPTIONS = ["opened", "closed", "merged", "all"]
+
+
+class ConfigDialog(Gtk.Dialog):
+    def __init__(self, cfg: dict, parent=None):
+        super().__init__(
+            title="GitLab Watcher — Configuration",
+            transient_for=parent,
+            modal=True,
+        )
+        self.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_SAVE, Gtk.ResponseType.OK,
+        )
+        self.set_default_size(450, -1)
+        self.set_border_width(12)
+
+        grid = Gtk.Grid(column_spacing=12, row_spacing=8)
+        area = self.get_content_area()
+        area.add(grid)
+
+        row = 0
+
+        def add_label(text, r):
+            lbl = Gtk.Label(label=text, xalign=1)
+            grid.attach(lbl, 0, r, 1, 1)
+
+        # GitLab URL
+        add_label("GitLab URL :", row)
+        self.entry_url = Gtk.Entry(hexpand=True)
+        self.entry_url.set_text(cfg.get("gitlab_url", ""))
+        self.entry_url.set_placeholder_text("https://gitlab.example.com")
+        grid.attach(self.entry_url, 1, row, 1, 1)
+        row += 1
+
+        # Token
+        add_label("Private Token :", row)
+        self.entry_token = Gtk.Entry(hexpand=True)
+        self.entry_token.set_text(cfg.get("private_token", ""))
+        self.entry_token.set_visibility(False)
+        self.entry_token.set_placeholder_text("glpat-...")
+        grid.attach(self.entry_token, 1, row, 1, 1)
+        row += 1
+
+        # Project IDs
+        add_label("Project IDs :", row)
+        self.entry_projects = Gtk.Entry(hexpand=True)
+        ids = cfg.get("project_ids", [])
+        self.entry_projects.set_text(", ".join(str(i) for i in ids) if isinstance(ids, list) else str(ids))
+        self.entry_projects.set_placeholder_text("12345, group/project")
+        grid.attach(self.entry_projects, 1, row, 1, 1)
+        row += 1
+
+        # Poll interval
+        add_label("Intervalle (s) :", row)
+        self.spin_interval = Gtk.SpinButton.new_with_range(10, 3600, 10)
+        self.spin_interval.set_value(int(cfg.get("poll_interval", 60)))
+        grid.attach(self.spin_interval, 1, row, 1, 1)
+        row += 1
+
+        # MR state
+        add_label("État des MR :", row)
+        self.combo_state = Gtk.ComboBoxText()
+        for s in MR_STATE_OPTIONS:
+            self.combo_state.append_text(s)
+        current = cfg.get("mr_state", "opened")
+        if current in MR_STATE_OPTIONS:
+            self.combo_state.set_active(MR_STATE_OPTIONS.index(current))
+        else:
+            self.combo_state.set_active(0)
+        grid.attach(self.combo_state, 1, row, 1, 1)
+        row += 1
+
+        # Per page
+        add_label("Nb MR affichées :", row)
+        self.spin_perpage = Gtk.SpinButton.new_with_range(5, 100, 5)
+        self.spin_perpage.set_value(int(cfg.get("per_page", 20)))
+        grid.attach(self.spin_perpage, 1, row, 1, 1)
+
+        self.show_all()
+
+    def get_config(self) -> dict:
+        ids_raw = self.entry_projects.get_text()
+        project_ids = [s.strip() for s in ids_raw.split(",") if s.strip()]
+        return {
+            "gitlab_url": self.entry_url.get_text().strip(),
+            "private_token": self.entry_token.get_text().strip(),
+            "project_ids": project_ids,
+            "poll_interval": int(self.spin_interval.get_value()),
+            "mr_state": self.combo_state.get_active_text() or "opened",
+            "per_page": int(self.spin_perpage.get_value()),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +290,10 @@ class GitLabWatcherApp:
         mark_read.connect("activate", self._mark_read)
         menu.append(mark_read)
 
+        config_item = Gtk.MenuItem(label="Configuration...")
+        config_item.connect("activate", self._on_configure)
+        menu.append(config_item)
+
         menu.append(Gtk.SeparatorMenuItem())
 
         quit_item = Gtk.MenuItem(label="Quitter")
@@ -229,6 +353,21 @@ class GitLabWatcherApp:
     def _mark_read(self, _widget):
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
 
+    def _on_configure(self, _widget):
+        dialog = ConfigDialog(self.cfg)
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            new_cfg = dialog.get_config()
+            save_config(new_cfg)
+            self.cfg = new_cfg
+            self.client = GitLabClient(
+                new_cfg["gitlab_url"], new_cfg["private_token"], new_cfg["project_ids"]
+            )
+            self.seen_iids.clear()
+            self.first_run = True
+            self._poll()
+        dialog.destroy()
+
     def _on_quit(self, _widget):
         Notify.uninit()
         Gtk.main_quit()
@@ -244,5 +383,20 @@ class GitLabWatcherApp:
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal.SIG_DFL)  # allow Ctrl+C
     cfg = load_config()
+
+    if not config_is_valid(cfg):
+        # Ouvrir le dialogue de config au premier lancement
+        Notify.init("GitLab Watcher")
+        dialog = ConfigDialog(cfg)
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            cfg = dialog.get_config()
+            save_config(cfg)
+        dialog.destroy()
+        if not config_is_valid(cfg):
+            print("Configuration incomplète, abandon.", file=sys.stderr)
+            sys.exit(1)
+        Notify.uninit()
+
     app = GitLabWatcherApp(cfg)
     app.run()
