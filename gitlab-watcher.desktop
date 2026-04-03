@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
 Name=GitLab Watcher
-Exec=python3 /home/nico/Dev/gitlab-watcher/gitlab_watcher.py
+Exec=python3 /path/to/gitlab_watcher.py
 Hidden=false
 X-GNOME-Autostart-enabled=true
