@@ -23,7 +23,7 @@ sudo apt install gir1.2-ayatanaappindicator3-0.1 gir1.2-notify-0.7 python3-gi py
 python3 gitlab_watcher.py
 ```
 
-Au premier lancement, un dialogue de configuration s'ouvre pour renseigner l'URL GitLab, le token et les IDs de projets.
+Au premier lancement, un dialogue de configuration s'ouvre pour renseigner le token et les URLs des projets GitLab à surveiller.
 
 Le token se crée dans GitLab : **Settings > Access Tokens**, scope `read_api`.
 

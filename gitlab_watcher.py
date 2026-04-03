@@ -5,7 +5,7 @@ import signal
 import sys
 import webbrowser
 from pathlib import Path
-from urllib.parse import quote as urlquote
+from urllib.parse import quote as urlquote, urlparse
 
 import gi
 import requests
@@ -33,45 +33,45 @@ import os
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
 
+def parse_project_url(url: str) -> tuple[str, str]:
+    """Extract (gitlab_base_url, project_path) from a full project URL.
+
+    Example: "https://gitlab.com/matbotto/plateforme-cgp/patrimonia"
+          -> ("https://gitlab.com", "matbotto/plateforme-cgp/patrimonia")
+    """
+    url = url.strip().rstrip("/")
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path.lstrip("/")
+    return base, path
+
+
 def load_config():
     cfg = {}
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH) as f:
             cfg = yaml.safe_load(f) or {}
 
-    # Env overrides
-    cfg["gitlab_url"] = os.environ.get("GITLAB_URL", cfg.get("gitlab_url", ""))
     cfg["private_token"] = os.environ.get("GITLAB_TOKEN", cfg.get("private_token", ""))
-    cfg["project_ids"] = os.environ.get(
-        "GITLAB_PROJECT_IDS",
-        cfg.get("project_ids", cfg.get("project_id", "")),
-    )
     cfg["poll_interval"] = int(
         os.environ.get("GITLAB_POLL_INTERVAL", cfg.get("poll_interval", 60))
     )
     cfg["mr_state"] = cfg.get("mr_state", "opened")
     cfg["per_page"] = int(cfg.get("per_page", 20))
 
-    _normalise_project_ids(cfg)
+    # Normalise project_urls to a list
+    urls = cfg.get("project_urls", [])
+    if isinstance(urls, str):
+        urls = [s.strip() for s in urls.split("\n") if s.strip()]
+    cfg["project_urls"] = urls
+
     return cfg
-
-
-def _normalise_project_ids(cfg):
-    ids = cfg.get("project_ids", "")
-    if isinstance(ids, (int, str)):
-        ids = str(ids)
-        cfg["project_ids"] = [s.strip() for s in ids.split(",") if s.strip()]
-    elif isinstance(ids, list):
-        cfg["project_ids"] = [str(i).strip() for i in ids]
-    else:
-        cfg["project_ids"] = []
 
 
 def save_config(cfg):
     data = {
-        "gitlab_url": cfg.get("gitlab_url", ""),
         "private_token": cfg.get("private_token", ""),
-        "project_ids": cfg.get("project_ids", []),
+        "project_urls": cfg.get("project_urls", []),
         "poll_interval": cfg.get("poll_interval", 60),
         "mr_state": cfg.get("mr_state", "opened"),
         "per_page": cfg.get("per_page", 20),
@@ -81,7 +81,7 @@ def save_config(cfg):
 
 
 def config_is_valid(cfg) -> bool:
-    return bool(cfg.get("gitlab_url") and cfg.get("private_token") and cfg.get("project_ids"))
+    return bool(cfg.get("private_token") and cfg.get("project_urls"))
 
 
 # ---------------------------------------------------------------------------
@@ -90,18 +90,18 @@ def config_is_valid(cfg) -> bool:
 
 
 class GitLabClient:
-    def __init__(self, base_url: str, token: str, project_ids: list[str]):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, token: str, project_urls: list[str]):
         self.token = token
-        self.project_ids = project_ids
+        self.project_urls = project_urls
         self.session = requests.Session()
         self.session.headers["PRIVATE-TOKEN"] = token
 
     def fetch_merge_requests(self, state="opened", per_page=20) -> list[dict]:
         all_mrs: list[dict] = []
-        for pid in self.project_ids:
-            encoded = urlquote(str(pid), safe="")
-            url = f"{self.base_url}/api/v4/projects/{encoded}/merge_requests"
+        for project_url in self.project_urls:
+            base_url, project_path = parse_project_url(project_url)
+            encoded = urlquote(project_path, safe="")
+            url = f"{base_url}/api/v4/projects/{encoded}/merge_requests"
             params = {
                 "state": state,
                 "per_page": per_page,
@@ -113,8 +113,7 @@ class GitLabClient:
                 resp.raise_for_status()
                 all_mrs.extend(resp.json())
             except Exception as e:
-                print(f"GitLab API error (project {pid}): {e}", file=sys.stderr)
-        # Sort all by updated_at desc, keep top per_page
+                print(f"GitLab API error ({project_url}): {e}", file=sys.stderr)
         all_mrs.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
         return all_mrs[:per_page]
 
@@ -151,16 +150,8 @@ class ConfigDialog(Gtk.Dialog):
         row = 0
 
         def add_label(text, r):
-            lbl = Gtk.Label(label=text, xalign=1)
+            lbl = Gtk.Label(label=text, xalign=1, valign=Gtk.Align.START)
             grid.attach(lbl, 0, r, 1, 1)
-
-        # GitLab URL
-        add_label("GitLab URL :", row)
-        self.entry_url = Gtk.Entry(hexpand=True)
-        self.entry_url.set_text(cfg.get("gitlab_url", ""))
-        self.entry_url.set_placeholder_text("https://gitlab.example.com")
-        grid.attach(self.entry_url, 1, row, 1, 1)
-        row += 1
 
         # Token
         add_label("Private Token :", row)
@@ -171,13 +162,17 @@ class ConfigDialog(Gtk.Dialog):
         grid.attach(self.entry_token, 1, row, 1, 1)
         row += 1
 
-        # Project IDs
-        add_label("Project IDs :", row)
-        self.entry_projects = Gtk.Entry(hexpand=True)
-        ids = cfg.get("project_ids", [])
-        self.entry_projects.set_text(", ".join(str(i) for i in ids) if isinstance(ids, list) else str(ids))
-        self.entry_projects.set_placeholder_text("12345, group/project")
-        grid.attach(self.entry_projects, 1, row, 1, 1)
+        # Project URLs
+        add_label("URLs des projets :", row)
+        scrolled = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        scrolled.set_min_content_height(80)
+        self.textbuf_urls = Gtk.TextBuffer()
+        urls = cfg.get("project_urls", [])
+        self.textbuf_urls.set_text("\n".join(urls) if isinstance(urls, list) else str(urls))
+        textview = Gtk.TextView(buffer=self.textbuf_urls)
+        textview.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        scrolled.add(textview)
+        grid.attach(scrolled, 1, row, 1, 1)
         row += 1
 
         # Poll interval
@@ -209,12 +204,12 @@ class ConfigDialog(Gtk.Dialog):
         self.show_all()
 
     def get_config(self) -> dict:
-        ids_raw = self.entry_projects.get_text()
-        project_ids = [s.strip() for s in ids_raw.split(",") if s.strip()]
+        start, end = self.textbuf_urls.get_bounds()
+        raw = self.textbuf_urls.get_text(start, end, False)
+        urls = [line.strip() for line in raw.splitlines() if line.strip()]
         return {
-            "gitlab_url": self.entry_url.get_text().strip(),
             "private_token": self.entry_token.get_text().strip(),
-            "project_ids": project_ids,
+            "project_urls": urls,
             "poll_interval": int(self.spin_interval.get_value()),
             "mr_state": self.combo_state.get_active_text() or "opened",
             "per_page": int(self.spin_perpage.get_value()),
@@ -237,7 +232,7 @@ class GitLabWatcherApp:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.client = GitLabClient(
-            cfg["gitlab_url"], cfg["private_token"], cfg["project_ids"]
+            cfg["private_token"], cfg["project_urls"]
         )
         self.seen_iids: set[tuple] = set()  # (project_id, iid)
         self.first_run = True
@@ -361,7 +356,7 @@ class GitLabWatcherApp:
             save_config(new_cfg)
             self.cfg = new_cfg
             self.client = GitLabClient(
-                new_cfg["gitlab_url"], new_cfg["private_token"], new_cfg["project_ids"]
+                new_cfg["private_token"], new_cfg["project_urls"]
             )
             self.seen_iids.clear()
             self.first_run = True

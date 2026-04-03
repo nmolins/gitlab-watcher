@@ -1,20 +1,14 @@
 # GitLab Watcher — Configuration
 # Copier ce fichier vers config.yaml et remplir les valeurs.
-
-# URL de votre instance GitLab
-gitlab_url: "https://gitlab.example.com"
+# Ou lancer le script directement : un dialogue de configuration s'ouvrira.
 
 # Personal Access Token (Settings > Access Tokens, scope: read_api)
 private_token: "glpat-xxxxxxxxxxxxxxxxxxxx"
 
-# ID(s) du/des projet(s) — numérique ou "group/project"
-# Un seul projet :
-#   project_ids: 12345
-# Plusieurs projets :
-#   project_ids:
-#     - 12345
-#     - "my-group/my-project"
-project_ids: 12345
+# URLs des projets GitLab à surveiller (une par ligne)
+project_urls:
+  - "https://gitlab.com/mon-groupe/mon-projet"
+  - "https://gitlab.com/mon-groupe/autre-projet"
 
 # Intervalle de polling en secondes (défaut: 60)
 poll_interval: 60
